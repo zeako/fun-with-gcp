@@ -5,31 +5,25 @@ from store.scheme import Entry, GetResponse
 
 
 @dataclass
-class Command:
+class State:
     pass
 
 
 @dataclass
-class NoCommand(Command):
+class Noop(State):
     pass
 
 
 @dataclass
-class SetCommand(Command):
+class Transition(State):
     name: str
-    value: int
-
-
-@dataclass
-class UnsetCommand(Command):
-    name: str
-    value: int
-    noop: bool
+    old: str
+    new: str
 
 
 class Node:
-    def __init__(self, command: Command) -> None:
-        self.command: Command = command
+    def __init__(self, state: State) -> None:
+        self.state: State = state
         self.prev: Node | None = None
         self.next: Node | None = None
 
@@ -40,7 +34,7 @@ class Service:
 
     def __init__(self) -> None:
         self.ds = datastore.Client()
-        self.node: Node = Node(NoCommand())
+        self.node: Node = Node(Noop())
 
     def _append_node(self, node: Node):
         node.prev = self.node
@@ -58,21 +52,26 @@ class Service:
         value_count["count"] += diff
         self.ds.put(value_count)
 
-    def _set_entry(self, name: str, value: int):
+    def _set_entry(self, name: str, value: str) -> State:
         with self.ds.transaction():
             key = self.ds.key(self.entry_entity, name)
             entry = self.ds.get(key=key)
 
+            old_value = "None"
             if entry:
                 if entry["value"] == value:
-                    return
-                self._update_value_count(entry["value"], -1)
+                    return Transition(name=name, old=value, new=value)
+                if entry["value"] != "None":
+                    self._update_value_count(int(entry["value"]), -1)
+                old_value = entry["value"]
 
             entry = datastore.Entity(key=key)
             entry["value"] = value
             self.ds.put(entry)
 
-            self._update_value_count(value, 1)
+            if value != "None":
+                self._update_value_count(int(value), 1)
+            return Transition(name=name, old=old_value, new=value)
 
     def set(self, name: str, value: int):
         """upsert requested entity name
@@ -81,21 +80,8 @@ class Service:
             name (str): entity name
             value (int): new value
         """
-        self._set_entry(name, value)
-
-        self._append_node(Node(SetCommand(name, value)))
-
-    def _unset_entry(self, name: str) -> tuple[int, bool]:
-        with self.ds.transaction():
-            key = self.ds.key(self.entry_entity, name)
-            entry = self.ds.get(key=key)
-
-            if entry:
-                self._update_value_count(entry["value"], -1)
-                self.ds.delete(key=key)
-                return entry["value"], True
-
-            return 0, False
+        transition = self._set_entry(name, str(value))
+        self._append_node(Node(state=transition))
 
     def unset(self, name: str):
         """unsets requested entity
@@ -103,8 +89,8 @@ class Service:
         Args:
             name (str): entity name
         """
-        res = self._unset_entry(name)
-        self._append_node(Node(UnsetCommand(name, *res)))
+        transition = self._set_entry(name, "None")
+        self._append_node(Node(transition))
 
     def get_entry(self, name: str) -> GetResponse:
         """returns desired entry
@@ -142,17 +128,13 @@ class Service:
         Returns:
             str: indication
         """
-        match self.node.command:
-            case NoCommand():
+        match self.node.state:
+            case Noop():
                 return "NO COMMANDS"
-            case SetCommand(name, _):
-                self._unset_entry(name)
+            case Transition(name, old, _):
+                self._set_entry(name, old)
                 self.node = self.node.prev
-                return f"{name} = None"
-            case UnsetCommand(name, value, noop) if not noop:
-                self._set_entry(name, value)
-                self.node = self.node.prev
-                return f"{name} = {value}"
+                return f"{name} = {old}"
 
         return "None"
 
@@ -164,16 +146,12 @@ class Service:
         """
         if self.node.next is None:
             return "NO COMMANDS"
-        
-        match self.node.next.command:
-            case SetCommand(name, value):
-                self._set_entry(name, value)
+
+        match self.node.next.state:
+            case Transition(name, _, new):
+                self._set_entry(name, new)
                 self.node = self.node.next
-                return f"{name} = {value}"
-            case UnsetCommand(name, _, _):
-                self._unset_entry(name)
-                self.node = self.node.next
-                return f"{name} = None"
+                return f"{name} = {new}"
 
         return "None"
 

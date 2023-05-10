@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 class Entry(BaseModel):
     name: str
-    value: int
+    value: str
 
     def __str__(self) -> str:
         return f"{self.value}"
