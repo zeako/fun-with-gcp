@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
+from store.scheme import Entry
 from store.service import Service
 
 router = APIRouter(default_response_class=PlainTextResponse)
@@ -18,8 +19,9 @@ def set_entry(name: str, value: int) -> str:
     Returns:
         str: the name and value
     """
-    service.set(name, value)
-    return f"{name} = {value}"
+    entry = Entry(name=name, value=str(value))
+    service.set(entry)
+    return f"{entry.name} = {entry.value}"
 
 
 @router.get("/get")
@@ -30,9 +32,9 @@ def get(name: str) -> str:
         name (str): entry name
 
     Returns:
-        str: entry name and value, if not present returns "None"
+        str: entry value, if not present returns "None"
     """
-    return str(service.get_entry(name))
+    return service.get_entry(name).value
 
 
 @router.get("/unset")
@@ -45,8 +47,9 @@ def unset(name: str) -> str:
     Returns:
         str: an indication that the entry was removed
     """
-    service.unset(name)
-    return f"{name} = None"
+    entry = Entry(name=name)
+    service.unset(entry)
+    return f"{entry.name} = {entry.value}"
 
 
 @router.get("/numequalto")
@@ -69,7 +72,8 @@ def undo() -> str:
     Returns:
         str: the change or "NO COMMANDS" if there are no more commands to undo
     """
-    return service.undo()
+    entry = service.undo()
+    return f"{entry.name} = {entry.value}" if entry is not None else "NO COMMANDS"
 
 
 @router.get("/redo")
@@ -79,7 +83,8 @@ def redo() -> str:
     Returns:
         str: the change or "NO COMMANDS" if there are no more commands to redo
     """
-    return service.redo()
+    entry = service.redo()
+    return f"{entry.name} = {entry.value}" if entry is not None else "NO COMMANDS"
 
 
 @router.get("/end")
@@ -90,7 +95,7 @@ def end() -> str:
         str: "CLEANED"
     """
     global service
-
     service.end()
     service = Service()
+
     return "CLEANED"

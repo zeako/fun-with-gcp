@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from google.cloud import datastore
 
-from store.scheme import Entry, GetResponse
+from store.scheme import Entry
 
 
 @dataclass
@@ -17,8 +17,8 @@ class Noop(State):
 @dataclass
 class Transition(State):
     name: str
-    old: str
-    new: str
+    old: str = "None"
+    new: str = "None"
 
 
 class Node:
@@ -41,7 +41,7 @@ class Service:
         self.node.next = node
         self.node = self.node.next
 
-    def _update_value_count(self, value: int, diff: int):
+    def _update_value_count(self, value: str, n: int):
         key = self.ds.key(self.value_count_entity, value)
         value_count = self.ds.get(key=key)
 
@@ -49,50 +49,55 @@ class Service:
             value_count = datastore.Entity(key=key)
             value_count["count"] = 0
 
-        value_count["count"] += diff
+        value_count["count"] += n
         self.ds.put(value_count)
 
-    def _set_entry(self, name: str, value: str) -> State:
+    def _set_entry(self, entry: Entry) -> State:
         with self.ds.transaction():
-            key = self.ds.key(self.entry_entity, name)
-            entry = self.ds.get(key=key)
+            key = self.ds.key(self.entry_entity, entry.name)
+            entity = self.ds.get(key=key)
 
-            old_value = "None"
-            if entry:
-                if entry["value"] == value:
-                    return Transition(name=name, old=value, new=value)
-                if entry["value"] != "None":
-                    self._update_value_count(int(entry["value"]), -1)
-                old_value = entry["value"]
+            transition = Transition(name=entry.name, new=entry.value)
 
-            entry = datastore.Entity(key=key)
-            entry["value"] = value
-            self.ds.put(entry)
+            if entity:
+                entity_val = entity["value"]
 
-            if value != "None":
-                self._update_value_count(int(value), 1)
-            return Transition(name=name, old=old_value, new=value)
+                # early exit
+                if entity_val == entry.value:
+                    transition.old = entry.value
+                    return transition
 
-    def set(self, name: str, value: int):
+                if entity_val != "None":
+                    self._update_value_count(entity_val, -1)
+                transition.old = entity_val
+
+            entity = datastore.Entity(key=key)
+            entity["value"] = entry.value
+            self.ds.put(entity)
+
+            if entry.value != "None":
+                self._update_value_count(entry.value, 1)
+            return transition
+
+    def set(self, entry: Entry):
         """upsert requested entity name
 
         Args:
-            name (str): entity name
-            value (int): new value
+            entry (Entry): desired entry to set
         """
-        transition = self._set_entry(name, str(value))
+        transition = self._set_entry(entry)
         self._append_node(Node(state=transition))
 
-    def unset(self, name: str):
+    def unset(self, entry: Entry):
         """unsets requested entity
 
         Args:
-            name (str): entity name
+            entry (Entry): desired entry to unset
         """
-        transition = self._set_entry(name, "None")
+        transition = self._set_entry(entry)
         self._append_node(Node(transition))
 
-    def get_entry(self, name: str) -> GetResponse:
+    def get_entry(self, name: str) -> Entry:
         """returns desired entry
 
         Args:
@@ -104,9 +109,10 @@ class Service:
         key = self.ds.key(self.entry_entity, name)
         entity = self.ds.get(key=key)
 
-        return GetResponse(
-            entry=Entry(name=name, value=entity["value"]) if entity != None else None
-        )
+        entry = Entry(name=name)
+        if entity is not None:
+            entry.value = entity["value"]
+        return entry
 
     def get_value_count(self, value: int) -> int:
         """return the count of entries with given value
@@ -122,38 +128,36 @@ class Service:
 
         return value_count["count"] if value_count else 0
 
-    def undo(self) -> str:
+    def undo(self) -> Entry | None:
         """undo last set/unset action
 
         Returns:
-            str: indication
+            Entry | None: entity object or None in case of noop
         """
         match self.node.state:
             case Noop():
-                return "NO COMMANDS"
+                return None
             case Transition(name, old, _):
-                self._set_entry(name, old)
+                entry = Entry(name=name, value=old)
+                self._set_entry(entry)
                 self.node = self.node.prev
-                return f"{name} = {old}"
+                return entry
 
-        return "None"
-
-    def redo(self) -> str:
+    def redo(self) -> Entry | None:
         """redo last undone action
 
         Returns:
-            str: indication
+            Entry | None: entity object or None in case of noop
         """
         if self.node.next is None:
-            return "NO COMMANDS"
+            return None
 
         match self.node.next.state:
             case Transition(name, _, new):
-                self._set_entry(name, new)
+                entry = Entry(name=name, value=new)
+                self._set_entry(entry)
                 self.node = self.node.next
-                return f"{name} = {new}"
-
-        return "None"
+                return entry
 
     def end(self):
         """clear the db"""
