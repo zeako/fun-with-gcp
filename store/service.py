@@ -123,7 +123,7 @@ class Service:
         Returns:
             int: count value
         """
-        key = self.ds.key(self.value_count_entity, value)
+        key = self.ds.key(self.value_count_entity, str(value))
         value_count = self.ds.get(key=key)
 
         return value_count["count"] if value_count else 0
